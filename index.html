@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Verificação de Fotos Faltantes</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" defer></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:ital,wght@0,400;0,600;0,700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: "Nunito Sans", sans-serif;
+            background-color: #f8f9fa;
+            color: #343a40;
+            margin: 0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.075);
+        }
+        h1, h2, h3 {
+            color: #3351e0; /* Azul dos cartões */
+            margin-bottom: 0.5em;
+        }
+        h1 { text-align: center; margin-bottom: 1em; }
+        h2 { margin-top: 1.5em; border-bottom: 2px solid #e9ecef; padding-bottom: 0.3em; }
+        h3 { margin-top: 1em; color: #4CAF50; /* Verde dos cartões */ }
+
+        .upload-section {
+            margin-bottom: 30px;
+            padding: 15px;
+            background-color: #e9ecef;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .upload-section label {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+            display: inline-block;
+        }
+        .upload-section label:hover {
+            background-color: #0069d9;
+        }
+        .upload-section input[type="file"] {
+            display: none;
+        }
+        #statusVerificacao {
+            margin-top: 15px;
+            font-weight: 600;
+        }
+        .status-ok { color: #28a745; }
+        .status-pendente { color: #ffc107; }
+        .status-erro { color: #dc3545; }
+
+        .lista-faltantes ul {
+            list-style-type: none;
+            padding-left: 0;
+        }
+        .lista-faltantes li {
+            padding: 8px 0;
+            border-bottom: 1px solid #f1f1f1;
+        }
+        .lista-faltantes li:last-child {
+            border-bottom: none;
+        }
+        .aluno-nome { font-weight: 600; }
+        .arquivo-esperado { font-size: 0.85em; color: #6c757d; margin-left: 10px; }
+
+        .sem-pendencias {
+            color: #28a745;
+            font-style: italic;
+        }
+        .link-voltar {
+            display: block;
+            text-align: center;
+            margin-top: 30px;
+            color: #3351e0;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        .link-voltar:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Verificação de Fotos Faltantes</h1>
+
+        <div class="upload-section">
+            <label for="inputCarregarZipVerificacao">Carregar Arquivo ZIP com Fotos
+                <input type="file" id="inputCarregarZipVerificacao" accept=".zip">
+            </label>
+            <p id="statusVerificacao">Aguardando arquivo ZIP...</p>
+        </div>
+
+        <div id="resultadoVerificacao">
+            <!-- As listas de alunos faltantes serão inseridas aqui -->
+        </div>
+    </div>
+
+    <a href="index.html" class="link-voltar">Voltar para a Página de Cartões</a> <!-- Assumindo que sua página principal é index.html -->
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            const inputCarregarZip = document.getElementById('inputCarregarZipVerificacao');
+            const resultadoVerificacaoDiv = document.getElementById('resultadoVerificacao');
+            const statusVerificacaoP = document.getElementById('statusVerificacao');
+            const chaveLocalStorage = 'dadosCartoesEscolaresUnificados';
+
+            let nomesArquivosNoZip = new Set(); // Para armazenar nomes de arquivos do ZIP
+
+            function atualizarStatus(mensagem, tipo = 'info') {
+                statusVerificacaoP.textContent = mensagem;
+                statusVerificacaoP.className = ''; // Limpa classes anteriores
+                if (tipo === 'ok') statusVerificacaoP.classList.add('status-ok');
+                else if (tipo === 'pendente') statusVerificacaoP.classList.add('status-pendente');
+                else if (tipo === 'erro') statusVerificacaoP.classList.add('status-erro');
+            }
+
+            function processarVerificacao() {
+                const dadosAlunosString = localStorage.getItem(chaveLocalStorage);
+                if (!dadosAlunosString) {
+                    resultadoVerificacaoDiv.innerHTML = "<p>Dados dos alunos não encontrados no localStorage. Por favor, carregue os dados na página principal primeiro.</p>";
+                    atualizarStatus("Dados de alunos não encontrados.", "erro");
+                    return;
+                }
+
+                let dadosAlunos;
+                try {
+                    dadosAlunos = JSON.parse(dadosAlunosString);
+                } catch (e) {
+                    resultadoVerificacaoDiv.innerHTML = "<p>Erro ao ler os dados dos alunos do localStorage.</p>";
+                    atualizarStatus("Erro nos dados locais.", "erro");
+                    return;
+                }
+
+                if (!dadosAlunos || dadosAlunos.length === 0) {
+                    resultadoVerificacaoDiv.innerHTML = "<p>Nenhum aluno na lista para verificar.</p>";
+                    atualizarStatus("Lista de alunos vazia.", "aviso");
+                    return;
+                }
+
+                // 1. Agrupar por Turno e depois por Turma
+                const turmasAgrupadas = {};
+                dadosAlunos.forEach(aluno => {
+                    const turno = aluno.turma.toLowerCase().includes("matutino") ? "Matutino" : "Vespertino";
+                    const nomeTurmaCompleto = aluno.turma; // Usar o nome completo para o cabeçalho da turma
+
+                    if (!turmasAgrupadas[turno]) {
+                        turmasAgrupadas[turno] = {};
+                    }
+                    if (!turmasAgrupadas[turno][nomeTurmaCompleto]) {
+                        turmasAgrupadas[turno][nomeTurmaCompleto] = [];
+                    }
+                    turmasAgrupadas[turno][nomeTurmaCompleto].push(aluno);
+                });
+
+                // 2. Ordenar as turmas dentro de cada turno
+                const ordemTurmasDefinida = ["Creche III", "Infantil I", "Infantil II", "1° Ano", "1º Ano"]; // Inclui ambas as variações de "1º Ano"
+                
+                function obterOrdemTurma(nomeTurma) {
+                    const nomeLower = nomeTurma.toLowerCase();
+                    for (let i = 0; i < ordemTurmasDefinida.length; i++) {
+                        if (nomeLower.includes(ordemTurmasDefinida[i].toLowerCase())) {
+                            return i;
+                        }
+                    }
+                    return ordemTurmasDefinida.length; // Fica no final se não corresponder
+                }
+
+                let htmlResultado = "";
+                let totalFaltantesGlobal = 0;
+
+                const turnosOrdenados = ["Matutino", "Vespertino"];
+
+                turnosOrdenados.forEach(turno => {
+                    if (turmasAgrupadas[turno]) {
+                        htmlResultado += `<h2>Turno: ${turno}</h2>`;
+                        
+                        const turmasDesteTurno = Object.keys(turmasAgrupadas[turno]).sort((a, b) => {
+                            return obterOrdemTurma(a) - obterOrdemTurma(b);
+                        });
+
+                        turmasDesteTurno.forEach(nomeTurma => {
+                            htmlResultado += `<h3>${nomeTurma}</h3>`;
+                            const alunosDaTurma = turmasAgrupadas[turno][nomeTurma];
+                            // Ordenar alunos alfabeticamente dentro da turma
+                            alunosDaTurma.sort((a, b) => a.nomeAluno.localeCompare(b.nomeAluno, 'pt-BR', { sensitivity: 'base' }));
+                            
+                            let listaAlunosFaltantesHTML = "<ul>";
+                            let faltantesNestaTurma = 0;
+
+                            alunosDaTurma.forEach(aluno => {
+                                const arquivoEsperado = aluno.arquivoFoto;
+                                if (!arquivoEsperado) {
+                                    listaAlunosFaltantesHTML += `<li><span class="aluno-nome">${aluno.nomeAluno}</span> <span class="arquivo-esperado">(Propriedade 'arquivoFoto' não definida no JSON)</span></li>`;
+                                    faltantesNestaTurma++;
+                                    totalFaltantesGlobal++;
+                                } else if (!nomesArquivosNoZip.has(arquivoEsperado)) {
+                                    listaAlunosFaltantesHTML += `<li><span class="aluno-nome">${aluno.nomeAluno}</span> <span class="arquivo-esperado">(Arquivo esperado: ${arquivoEsperado})</span></li>`;
+                                    faltantesNestaTurma++;
+                                    totalFaltantesGlobal++;
+                                }
+                            });
+
+                            if (faltantesNestaTurma === 0) {
+                                listaAlunosFaltantesHTML += `<li class="sem-pendencias">Nenhuma foto pendente para esta turma.</li>`;
+                            }
+                            listaAlunosFaltantesHTML += "</ul>";
+                            htmlResultado += `<div class="lista-faltantes">${listaAlunosFaltantesHTML}</div>`;
+                        });
+                    }
+                });
+                
+                resultadoVerificacaoDiv.innerHTML = htmlResultado;
+                if (totalFaltantesGlobal > 0) {
+                    atualizarStatus(`Verificação concluída. ${totalFaltantesGlobal} foto(s) pendente(s) no total.`, "pendente");
+                } else {
+                    atualizarStatus("Verificação concluída. Nenhuma foto pendente!", "ok");
+                }
+            }
+
+
+            if (inputCarregarZip) {
+                inputCarregarZip.addEventListener('change', async function(event) {
+                    const file = event.target.files[0];
+                    if (file) {
+                        if (typeof JSZip === "undefined") {
+                            atualizarStatus("Erro: Biblioteca JSZip não carregada.", "erro");
+                            return;
+                        }
+                        atualizarStatus(`Processando arquivo ZIP: ${file.name}...`, "info");
+                        nomesArquivosNoZip.clear(); // Limpa a lista anterior
+                        const zip = new JSZip();
+                        try {
+                            const carregado = await zip.loadAsync(file);
+                            for (const nomeArquivoNoZip in carregado.files) {
+                                if (!carregado.files[nomeArquivoNoZip].dir) {
+                                    nomesArquivosNoZip.add(nomeArquivoNoZip);
+                                }
+                            }
+                            console.log("Arquivos encontrados no ZIP:", Array.from(nomesArquivosNoZip));
+                            atualizarStatus(`${nomesArquivosNoZip.size} arquivos de imagem lidos do ZIP. Verificando pendências...`, "info");
+                            processarVerificacao();
+
+                        } catch (error) {
+                            console.error("Erro ao carregar ou processar o arquivo ZIP:", error);
+                            atualizarStatus("Erro ao processar o arquivo ZIP.", "erro");
+                            resultadoVerificacaoDiv.innerHTML = `<p class="status-erro">Ocorreu um erro ao ler o arquivo ZIP. Verifique se é um arquivo válido.</p>`;
+                        }
+                    }
+                    event.target.value = null; // Permite recarregar o mesmo arquivo
+                });
+            }
+
+            // Processa a verificação inicialmente, caso o usuário já tenha carregado um ZIP em outra sessão
+            // ou para mostrar que precisa carregar um ZIP.
+            // Se não houver ZIP carregado (nomesArquivosNoZip estará vazio), mostrará todos como pendentes.
+            processarVerificacao();
+        });
+    </script>
+</body>
+</html>
